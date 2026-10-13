@@ -221,6 +221,17 @@ body.inlesson .main{padding:0}
 .teach .tr{font-size:22px;color:var(--ink2)}
 .teach .row{display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:12px}
 .teach .ghint{background:#FFF6D8;border-radius:14px;padding:10px 14px;font-size:16px;color:#7A5A00;max-width:440px}
+.gate{width:100%;display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:16px}
+.gs{width:100%;max-width:440px;display:flex;align-items:center;gap:12px;border:2px solid var(--line);border-radius:16px;padding:10px 14px;font-size:17px;text-align:left;color:var(--ink3)}
+.gs b{color:inherit}
+.gs.now{border-color:#C4B4F7;background:#F6F2FF;color:var(--ink)}
+.gs.ok{border-color:#95D873;background:var(--okbg);color:var(--oktx)}
+.gn{width:30px;height:30px;border-radius:50%;background:var(--line2);display:grid;place-items:center;font-weight:900;flex:none;color:var(--ink2)}
+.gs.now .gn{background:var(--lilac);color:#fff}.gs.ok .gn{background:var(--leaf);color:#fff}
+.mic.sm{width:100px;height:100px;--s:52px;margin-top:6px}
+.ovr{font-size:14px;color:var(--ink2);text-decoration:underline;padding:4px 8px}
+.gline{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:16px;--s:22px;color:var(--ink)}
+.gwait{color:var(--ink2);font-size:15px;max-width:420px}
 .newtag{background:var(--lilac);color:#fff;border-radius:99px;padding:3px 12px;font-size:13px;font-weight:900}
 
 .lfoot{border-top:2px solid var(--line);padding:20px 20px calc(env(safe-area-inset-bottom,0px) + 20px);background:#fff}
@@ -808,14 +819,15 @@ if(HAS_TTS){loadVoices();speechSynthesis.onvoiceschanged=loadVoices;}
 
 /* ---------- Konuşma tanıma ---------- */
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+const speakRaw=speak;speak=function(t,s,b){if(UI.listening)return;speakRaw(t,s,b);};
 const canSpeak=()=>!!SR&&S.speech&&Date.now()>(S.speechOff||0);
 let REC=null;
-function recognize(onDone){
+function recognize(onDone,lang){
   if(!SR){onDone(null,'no');return;}
   try{if(HAS_TTS)speechSynthesis.cancel();}catch(e){}
   let finalAlts=null,err=null;
   try{
-    const r=new SR();r.lang='en-US';r.interimResults=true;r.maxAlternatives=5;r.continuous=false;
+    const r=new SR();r.lang=lang||'en-US';r.interimResults=true;r.maxAlternatives=5;r.continuous=false;
     r.onresult=ev=>{const res=ev.results[ev.results.length-1];UI.heard=res[0].transcript;const h=$('.heard');if(h)h.innerHTML=`Duyduğum: <b>${esc(UI.heard)}</b>`;
       if(res.isFinal)finalAlts=[...res].map(a=>a.transcript);};
     r.onerror=ev=>{err=ev.error;};
@@ -825,6 +837,49 @@ function recognize(onDone){
 }
 function stopRec(){try{REC&&REC.abort();}catch(e){}REC=null;UI.listening=false;}
 function micDenied(err){return err==='not-allowed'||err==='service-not-allowed'||err==='audio-capture';}
+const trFlat=s=>s.toLocaleLowerCase('tr').replace(/[çğıöşü]/g,c=>({'ç':'c','ğ':'g','ı':'i','ö':'o','ş':'s','ü':'u'}[c])).normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+const trNorm=s=>trFlat(String(s).replace(/\(.*?\)/g,' ')).replace(/[.!?;:"“”’'‘]/g,' ').replace(/\s+/g,' ').trim();
+function trTargets(tr){const all=[trNorm(tr)];String(tr).replace(/\(.*?\)/g,' ').split(/[\/,]/).forEach(p=>{const n=trNorm(p);if(n&&!all.includes(n))all.push(n);});return all.filter(Boolean);}
+function judgeTR(alts,it){
+  const ts=trTargets(it.tr);let best=0;
+  for(const al of alts){const a=trNorm(al);if(!a)continue;
+    for(const t of ts){if(a===t||(' '+a+' ').includes(' '+t+' '))return 1;
+      best=Math.max(best,1-lev(a,t)/Math.max(a.length,t.length));}}
+  return best;
+}
+const enTh=it=>canon(it.en).length<=4?.6:.75;
+const trTh=it=>Math.min(...trTargets(it.tr).map(t=>t.length))<=4?.6:.72;
+/* Söyleme kapısı: mikrofon kullanılabiliyorsa söylemeden geçilemez */
+const gateOn=()=>!!SR&&S.speech;
+const needsTR=e=>e&&(e.type==='pic'||e.type==='picword')&&gateOn();
+function gateOpen(e){
+  if(!e||!gateOn())return true;
+  if(e.type==='teach')return !!(e.g1&&e.g2);
+  if(needsTR(e))return !e.answered||!!e.trSaid;
+  return true;
+}
+function gateMic(){
+  const e=cur();if(!e||UI.listening)return;
+  const enStep=e.type==='teach'&&!e.g1;const lang=enStep?'en-US':'tr-TR';
+  e.gmsg='';
+  recognize((alts,err)=>{
+    if(cur()!==e)return;
+    if(micDenied(err)){S.speech=false;save();toast('Mikrofon izni verilmedi. Konuşma adımları kapatıldı.','🎙️');renderMain();return;}
+    if(!alts||!alts.length){e.gfails=(e.gfails||0)+1;e.gmsg='Seni duyamadım. Mikrofona dokun ve yüksek sesle söyle.';renderMain();return;}
+    const ok=enStep?judgeSpeech(alts,e.item)>=enTh(e.item):judgeTR(alts,e.item)>=trTh(e.item);
+    if(ok){
+      sfx('correct');e.gfails=0;
+      if(enStep){e.g1=true;e.gmsg=`“${alts[0]}” Süper! Şimdi Türkçesini söyle.`;}
+      else{if(e.type==='teach')e.g2=true;else e.trSaid=true;e.gmsg=`“${alts[0]}” Aferin!`;award('konus');}
+    }else{e.gfails=(e.gfails||0)+1;sfx('wrong');e.gmsg=`“${alts[0]}” duydum. Bir daha dene!`;}
+    renderMain();
+  },lang);
+  renderMain();
+}
+function gateOverride(){
+  confirmBox('Yetişkin onayı','Çocuğun doğru söylediğini duydunuz mu? Onaylarsanız bu adım geçilir.',()=>{const e=cur();if(!e)return;e.g1=true;e.g2=true;e.trSaid=true;e.gmsg='Yetişkin onayladı.';renderMain();});
+}
+function gateBlock(){toast('Önce sesli söylemelisin. Mikrofona dokun!','🎙️');sfx('wrong');}
 
 /* ---------- Maskot ---------- */
 function mascotSVG(mood='happy',cls='',head=false){
@@ -887,7 +942,7 @@ function distract(item,needE){
 }
 function fill(e){
   const it=e.item;
-  Object.assign(e,{sel:null,built:[],answered:false,ok:null,almost:false,typed:'',heard:'',tries:0,retry:''});
+  Object.assign(e,{sel:null,built:[],answered:false,ok:null,almost:false,typed:'',heard:'',tries:0,retry:'',g1:false,g2:false,trSaid:false,gfails:0,gmsg:''});
   switch(e.type){
     case 'pic':case 'picword':e.opts=distract(it,true);break;
     case 'en2tr':case 'listen':case 'tr2en':e.opts=distract(it,false);break;
@@ -1265,12 +1320,20 @@ function optsHTML(e,label,kind){
     if(e.answered){if(right(i))c+=' right';else if(e.sel===i)c+=' bad';else c+=' dim';}
     return `<button class="opt${c}" data-a="opt" data-v="${i}" ${e.answered?'disabled':''}><span class="k">${i+1}</span>${label(o)}</button>`;}).join('')}</div>`;
 }
+function gateBox(e){
+  const s1=e.g1?'ok':'now',s2=e.g2?'ok':e.g1?'now':'';const done=e.g1&&e.g2;
+  return `<div class="gate"><div class="gs ${s1}"><span class="gn">${e.g1?'✓':'1'}</span><span>İngilizcesini söyle: <b>${esc(e.item.en)}</b></span></div>
+  <div class="gs ${s2}"><span class="gn">${e.g2?'✓':'2'}</span><span>Türkçesini söyle: <b>${esc(e.item.tr)}</b></span></div>
+  ${done?'':`<button class="mic sm${UI.listening?' on':''}" data-a="gmic" aria-label="Konuş">${im('🎙️')}</button>`}
+  <div class="heard">${UI.listening?'Dinliyorum, şimdi söyle!':e.gmsg?esc(e.gmsg):done?'':'Mikrofona dokun ve söyle'}</div>
+  ${!done&&e.gfails>=3?'<button class="ovr" data-a="govr">Yetişkin onayı ile geç</button>':''}</div>`;
+}
 function lessonBody(e){
   const it=e.item;let t='',p='',b='',tag='';
   switch(e.type){
     case 'teach':t=it.g?'Yeni kural':'Yeni kelime';
       b=`<div class="teach"><span class="newtag">YENİ</span>${vis(it,'v')}<div class="en">${esc(it.en)}</div><div class="tr">${esc(it.tr)}</div>${it.g?`<p class="ghint">${esc(it.hint)}</p>`:''}
-      <div class="row">${spk(it.en)}${slowBtn(it.en)}${canSpeak()?`<button class="btn ghost sm" data-a="trysay">${im('🎙️')}Sen de söyle</button>`:''}</div></div>`;break;
+      <div class="row">${spk(it.en)}${slowBtn(it.en)}</div>${gateOn()?gateBox(e):''}</div>`;break;
     case 'pic':t='Doğru resmi seç';p=bubble(`${spk(it.en)}<span class="w">${esc(it.en)}</span>`);b=optsHTML(e,o=>vis(o),'pic');break;
     case 'en2tr':t='Bu ne demek?';p=bubble(`${spk(it.en)}<span class="w">${esc(it.en)}</span>`);b=optsHTML(e,o=>esc(o.tr));break;
     case 'listen':t='Dinle ve anlamını seç';p=`<div class="listen">${spk(it.en,true)}${slowBtn(it.en)}</div>`;b=optsHTML(e,o=>esc(o.tr));break;
@@ -1302,22 +1365,25 @@ function lessonBody(e){
   return `${tag?`<span class="ex-tag">${im(e.type==='speak'||e.type==='say'?'🎙️':'✏️')}${tag}</span>`:''}<h1 class="ex-t">${t}</h1>${p}${b}`;
 }
 function lessonFoot(e){
-  if(e.type==='teach')return `<footer class="lfoot"><div class="in"><span></span><button class="btn" data-a="cont">Devam</button></div></footer>`;
+  if(e.type==='teach'){const ok=gateOpen(e);return `<footer class="lfoot"><div class="in">${ok?'<span></span>':'<span class="gwait">İngilizcesini ve Türkçesini söyleyince devam edebilirsin.</span>'}<button class="btn" data-a="cont" ${ok?'':'disabled'}>Devam</button></div></footer>`;}
   if(!e.answered){
     if(e.type==='match')return `<footer class="lfoot"><div class="in"><span></span><button class="btn" disabled>Kontrol et</button></div></footer>`;
     if(e.type==='speak'||e.type==='say')return `<footer class="lfoot"><div class="in"><button class="btn ghost" data-a="nospeak">Şimdi konuşamıyorum</button><button class="btn lilac" data-a="mic" ${UI.listening?'disabled':''}>${im('🎙️')}Konuş</button></div></footer>`;
     return `<footer class="lfoot"><div class="in"><span></span><button class="btn" id="chk" data-a="check" ${isReadyStatic(e)?'':'disabled'}>Kontrol et</button></div></footer>`;
   }
   const it=e.item,en=e.type==='gram'?it.a:it.en;
+  const needT=needsTR(e)&&!e.trSaid;
+  const nextBtn=needT?`<button class="btn lilac" data-a="gmic" ${UI.listening?'disabled':''}>${im('🎙️')}${UI.listening?'Dinliyorum…':'Türkçesini söyle'}</button>`:'<button class="btn" data-a="next">Devam</button>';
+  const gl=needsTR(e)?`<div class="gline">${im('🎙️')}<span>${e.trSaid?`Türkçesini söyledin: <b>${esc(it.tr)}</b> ✓`:`Şimdi anlamını Türkçe söyle: <b>${esc(it.tr)}</b>`}</span></div>${e.gmsg&&!e.trSaid?`<small>${esc(e.gmsg)}</small>`:''}${needT&&e.gfails>=3?'<button class="ovr" data-a="govr">Yetişkin onayı ile geç</button>':''}`:'';
   const line=e.type==='match'?(e.err?`${e.err} kez karıştırdın ama hepsini buldun.`:'Hepsini ilk denemede buldun!'):`<b>${esc(en)}</b> = ${esc(it.tr)} ${e.type!=='gram'?miniSay(en):''}`;
   if(e.ok){
     const title=e.almost?'Neredeyse oldu!':G.praise;
     const extra=e.almost?`<small>Küçük bir yazım hatası var. Doğrusu yukarıda.</small>`:G.combo>=3?`<small>${G.combo} doğru üst üste!</small>`:'';
-    return `<footer class="lfoot ok"><div class="in"><div class="fb"><span class="fi">${im(e.almost?'😉':'🥳')}</span><div><h3>${title}</h3><div class="ft">${line}${extra}</div></div></div><button class="btn" data-a="next">Devam</button></div></footer>`;
+    return `<footer class="lfoot ok"><div class="in"><div class="fb"><span class="fi">${im(e.almost?'😉':'🥳')}</span><div><h3>${title}</h3><div class="ft">${line}${extra}${gl}</div></div></div>${nextBtn}</div></footer>`;
   }
   const yours=e.typed?`<small>Senin yazdığın: ${esc(e.typed)}</small>`:e.heard?`<small>Duyduğum: ${esc(e.heard)}</small>`:'';
   const later=G.hearts==null||G.hearts>0?'<small>Bu soruyu birazdan tekrar soracağım.</small>':'';
-  return `<footer class="lfoot bad"><div class="in"><div class="fb"><span class="fi">${im('😢')}</span><div><h3>Doğru cevap:</h3><div class="ft">${line}${yours}${later}</div></div></div><button class="btn" data-a="next">Devam</button></div></footer>`;
+  return `<footer class="lfoot bad"><div class="in"><div class="fb"><span class="fi">${im('😢')}</span><div><h3>Doğru cevap:</h3><div class="ft">${line}${yours}${later}${gl}</div></div></div>${nextBtn}</div></footer>`;
 }
 function isReadyStatic(e){if(e.type==='type'||e.type==='dict')return !!e.typed;return isReady(e);}
 function vLesson(){
@@ -1404,7 +1470,7 @@ document.addEventListener('click',e=>{
   if(!el||el.disabled)return;
   const a=el.dataset.a,v=el.dataset.v;
   ac();
-  if(!['say','sayslow','opt','tile','untile','check','mL','mR','mic','cardmic','backsp'].includes(a))sfx('click');
+  if(!['say','sayslow','opt','tile','untile','check','mL','mR','mic','gmic','cardmic','backsp'].includes(a))sfx('click');
   switch(a){
     case 'start':$('#splash').classList.add('out');setTimeout(()=>$('#splash').remove(),500);musicStart();speak('Welcome to Word Islands!');break;
     case 'nav':if(UI.screen==='lesson'&&G){quitLesson();break;}G=null;UI.cards=null;goScreen(v);break;
@@ -1427,8 +1493,10 @@ document.addEventListener('click',e=>{
     case 'mL':matchPick('L',+v);break;
     case 'mR':matchPick('R',+v);break;
     case 'check':check();break;
-    case 'next':next();break;
-    case 'cont':{const ex=cur();G.doneIds.add(ex.id);stopRec();next();break;}
+    case 'next':if(!gateOpen(cur())){gateBlock();break;}next();break;
+    case 'gmic':gateMic();break;
+    case 'govr':gateOverride();break;
+    case 'cont':{const ex=cur();if(!gateOpen(ex)){gateBlock();break;}G.doneIds.add(ex.id);stopRec();next();break;}
     case 'mic':micStart();break;
     case 'trysay':{const ex=cur();recognize((alts,err)=>{if(micDenied(err)){S.speech=false;save();toast('Mikrofon izni verilmedi.','🎙️');renderMain();return;}
       if(!alts){toast('Seni duyamadım, bir daha dene.','🎙️');return;}
@@ -1463,7 +1531,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape'&&!$('#modal').classList.contains('hidden')){closeModal();return;}
   if(UI.screen!=='lesson'||!G||!$('#modal').classList.contains('hidden')||$('#splash'))return;
   const ex=cur();
-  if(e.key==='Enter'){e.preventDefault();if(ex.type==='teach'){G.doneIds.add(ex.id);next();}else if(ex.answered)next();else check();return;}
+  if(e.key==='Enter'){e.preventDefault();if((ex.type==='teach'||ex.answered)&&!gateOpen(ex)){gateBlock();return;}if(ex.type==='teach'){G.doneIds.add(ex.id);next();}else if(ex.answered)next();else check();return;}
   if(document.activeElement&&document.activeElement.id==='ans')return;
   if(!ex.answered&&ex.opts&&/^[1-4]$/.test(e.key)){const i=+e.key-1;if(i<ex.opts.length){ex.sel=i;sfx('select');renderMain();}}
 });
